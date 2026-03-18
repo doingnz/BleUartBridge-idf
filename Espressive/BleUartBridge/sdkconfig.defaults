@@ -1,0 +1,30 @@
+# ── Bluetooth ────────────────────────────────────────────────────────────────
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+# Disable Bluedroid — NimBLE is used exclusively
+CONFIG_BT_BLUEDROID_ENABLED=n
+
+# Single peripheral connection is sufficient
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+
+# Peripheral role only (saves memory vs enabling all roles)
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+
+# Preferred ATT MTU — client will negotiate down if it can't match
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512
+
+# NimBLE host task stack (4 KB is comfortable for this workload)
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=4096
+
+# Store NimBLE RAM in internal SRAM for reliability on ESP32-S3
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y
+
+# ── UART ─────────────────────────────────────────────────────────────────────
+# Keep UART ISR in IRAM so it is not evicted during flash operations
+CONFIG_UART_ISR_IN_IRAM=y
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
