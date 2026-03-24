@@ -24,6 +24,7 @@ Console commands in the monitor:
 | Key | Action |
 |-----|--------|
 | `h` | Toggle hex dump (logs both directions with offset, hex, ASCII) |
+| `n` | Toggle NimBLE verbose logging (suppressed by default — fires on every notify) |
 | `s` | Print status: BLE state, byte counts, UART HW buffer size |
 
 ## File structure

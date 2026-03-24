@@ -56,7 +56,8 @@ static const char *TAG = "BRIDGE";
 
 // ── Bridge state ──────────────────────────────────────────────────────────────
 
-static volatile bool          hex_dump_on    = false;
+static volatile bool          hex_dump_on       = false;
+static volatile bool          nimble_log_verbose = false;  // NimBLE INFO logs off by default
 static volatile unsigned long bytes_to_uart  = 0;
 static volatile unsigned long bytes_from_uart = 0;
 
@@ -172,6 +173,7 @@ static void print_status(void)
     ESP_LOGI(TAG, "── Status ──────────────────────────────");
     ESP_LOGI(TAG, " BLE       : %s", nus_is_connected() ? "connected" : "advertising");
     ESP_LOGI(TAG, " Hex dump  : %s", hex_dump_on ? "ON" : "OFF");
+    ESP_LOGI(TAG, " NimBLE log: %s", nimble_log_verbose ? "VERBOSE" : "quiet");
     ESP_LOGI(TAG, " →UART     : %lu bytes", bytes_to_uart);
     ESP_LOGI(TAG, " ←UART     : %lu bytes", bytes_from_uart);
     ESP_LOGI(TAG, " UART hwBuf: %u bytes", (unsigned)hw_buf);
@@ -190,7 +192,12 @@ void app_main(void)
     ESP_LOGI(TAG, " BLE  : '%s'  MTU=%d  chunk=%d",
              BLE_DEVICE_NAME, BLE_MTU, BLE_CHUNK);
     ESP_LOGI(TAG, " Dump : OFF  (send 'h' to toggle)");
-    ESP_LOGI(TAG, " Commands: h=hex dump  s=status");
+    ESP_LOGI(TAG, " Commands: h=hex dump  n=NimBLE log  s=status");
+
+    // Suppress NimBLE host INFO logs by default — they fire on every notify()
+    // call and flood the console during active data transfer.
+    // Send 'n' in the monitor to toggle them back on for debugging.
+    esp_log_level_set("NimBLE", ESP_LOG_WARN);
 
     uart_init();
     nus_init(BLE_DEVICE_NAME, on_ble_write);
@@ -213,6 +220,13 @@ void app_main(void)
         case 'h': case 'H':
             hex_dump_on = !hex_dump_on;
             ESP_LOGI(TAG, "[CMD] Hex dump %s", hex_dump_on ? "ON" : "OFF");
+            break;
+        case 'n': case 'N':
+            nimble_log_verbose = !nimble_log_verbose;
+            esp_log_level_set("NimBLE",
+                nimble_log_verbose ? ESP_LOG_INFO : ESP_LOG_WARN);
+            ESP_LOGI(TAG, "[CMD] NimBLE log %s",
+                nimble_log_verbose ? "VERBOSE" : "quiet");
             break;
         case 's': case 'S':
             print_status();

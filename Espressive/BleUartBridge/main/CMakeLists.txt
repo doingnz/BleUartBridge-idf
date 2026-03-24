@@ -7,6 +7,7 @@ idf_component_register(
         bt
         driver
         esp_driver_uart
+        esp_driver_gpio
         nvs_flash
         esp_system
 )

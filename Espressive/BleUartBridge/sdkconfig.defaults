@@ -1,6 +1,13 @@
 # ── Target ───────────────────────────────────────────────────────────────────
 CONFIG_IDF_TARGET="esp32s3"
 
+# ── Console ───────────────────────────────────────────────────────────────────
+# ESP32-S3 is connected via its built-in USB Serial/JTAG controller (not via
+# an external USB-UART chip on GPIO1/3). Make USB Serial/JTAG the primary
+# console so that getchar() reads from USB CDC, not from the hardware UART0
+# RX pin which has nothing connected.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
 # ── Bluetooth ────────────────────────────────────────────────────────────────
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y

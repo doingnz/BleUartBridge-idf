@@ -138,12 +138,17 @@ static const struct ble_gatt_svc_def s_gatt_svcs[] = {
 
 static void start_advertising(void)
 {
-    // Advertising PDU: flags + short device name
+    // Advertising PDU: flags + NUS 128-bit service UUID
+    // Placing the UUID here (not in scan response) ensures it is visible to
+    // passive scanners and to Web Bluetooth on Windows, which uses the WinRT
+    // BluetoothLEAdvertisementWatcher and may not process scan responses in
+    // time for the requestDevice() picker.
+    // 3 bytes flags + 18 bytes UUID128 AD = 21 bytes — fits within 31-byte limit.
     struct ble_hs_adv_fields adv = {0};
     adv.flags                 = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    adv.name                  = (const uint8_t *)s_device_name;
-    adv.name_len              = (uint8_t)strlen(s_device_name);
-    adv.name_is_complete      = 1;
+    adv.uuids128              = &NUS_SVC_UUID;
+    adv.num_uuids128          = 1;
+    adv.uuids128_is_complete  = 1;
 
     int rc = ble_gap_adv_set_fields(&adv);
     if (rc != 0) {
@@ -151,15 +156,15 @@ static void start_advertising(void)
         return;
     }
 
-    // Scan response: NUS 128-bit service UUID so clients can filter by UUID
+    // Scan response: device name (too long to share ADV PDU with 128-bit UUID)
     struct ble_hs_adv_fields rsp = {0};
-    rsp.uuids128                 = &NUS_SVC_UUID;
-    rsp.num_uuids128             = 1;
-    rsp.uuids128_is_complete     = 1;
+    rsp.name                     = (const uint8_t *)s_device_name;
+    rsp.name_len                 = (uint8_t)strlen(s_device_name);
+    rsp.name_is_complete         = 1;
 
     rc = ble_gap_adv_rsp_set_fields(&rsp);
     if (rc != 0) {
-        // Scan response failure is non-fatal — device is still discoverable
+        // Scan response failure is non-fatal — device is still discoverable by UUID
         ESP_LOGW(TAG, "ble_gap_adv_rsp_set_fields: %d (non-fatal)", rc);
     }
 
@@ -190,9 +195,6 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             s_conn_handle = event->connect.conn_handle;
             s_connected   = true;
             ESP_LOGI(TAG, "Client connected  handle=%d", s_conn_handle);
-
-            // Initiate MTU exchange — peer will respond with its preferred MTU
-            ble_gattc_exchange_mtu(s_conn_handle, NULL, NULL);
         } else {
             ESP_LOGW(TAG, "Connection failed  status=%d — restarting advertising",
                      event->connect.status);
