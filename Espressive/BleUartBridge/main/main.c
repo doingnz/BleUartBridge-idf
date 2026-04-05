@@ -139,7 +139,7 @@ static void led_set(uint8_t r, uint8_t g, uint8_t b)
     led_strip_set_pixel(s_led_strip, 0, r, g, b);
     led_strip_refresh(s_led_strip);
 #else
-    gpio_set_level(LED_PIN, (r || g || b) ? 1 : 0);
+    gpio_set_level(LED_PIN, (r || g || b) ? 0 : 1);  // active-low: 0 = on
 #endif
 }
 
