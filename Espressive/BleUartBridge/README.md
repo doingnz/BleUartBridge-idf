@@ -32,7 +32,7 @@ Console port: built-in USB Serial/JTAG (no external adapter needed).
 | UART1 RX | 4  | device TX → ESP32 |
 | RTS | 13 | ESP32 → device CTS |
 | CTS | 15 | device RTS → ESP32 |
-| LED | 14 | Blue LED (plain GPIO) |
+| LED | 14 | Blue LED (plain GPIO, **active-low**: GPIO=0 → on) |
 
 Console port: UART0 via on-board CH340/CP2102 USB-UART chip.
 
@@ -98,7 +98,7 @@ The firmware exposes an interactive console on the monitor port.
 | Advertising (no client) | Blinks dim blue at 1 Hz |
 | Client connected | Steady dim blue |
 
-On the ESP32-S3 the LED is a WS2812 RGB pixel (GPIO48). On the ESP32 it is a single-colour blue LED (GPIO14).
+On the ESP32-S3 the LED is a WS2812 RGB pixel (GPIO48). On the ESP32 it is a single-colour blue LED on GPIO14. The ESP32 DevKit LED is **active-low** (anode to VCC, cathode to GPIO) — `gpio_set_level(0)` turns it on.
 
 ## BLE details
 

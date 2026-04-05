@@ -151,7 +151,10 @@ process the disconnect event, which prevented clean advertising restart.
 
 `led_init()` and `led_set(r, g, b)` hide the hardware difference:
 
-- **ESP32**: plain `gpio_set_level()` — any non-zero colour = on.
+- **ESP32**: plain `gpio_set_level()` — the LED is **active-low** (anode to VCC,
+  cathode to GPIO14), so `gpio_set_level(0)` = on, `gpio_set_level(1)` = off.
+  `led_set()` inverts the level accordingly: any non-zero colour component drives
+  the pin low (on); all-zero drives it high (off).
 - **ESP32-S3**: `led_strip_set_pixel()` + `led_strip_refresh()` via RMT peripheral
   (`led_strip_new_rmt_device`, 10 MHz resolution).
   Keep colour values ≤ 16 to limit current draw from the 3.3 V rail.
@@ -200,7 +203,7 @@ headroom for sustained full-speed traffic in both directions.
 | UART1 RX | 4  | device → ESP32 |
 | RTS | 13 | ESP32 → device CTS |
 | CTS | 15 | device RTS → ESP32 |
-| Blue LED | 14 | Output (plain GPIO) |
+| Blue LED | 14 | Output (plain GPIO, **active-low**) |
 
 ### ESP32-S3 DevKit S3-N16R8 (`boards/esp32s3_devkit.h`)
 
