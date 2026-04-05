@@ -28,11 +28,18 @@ void nus_init(const char *device_name, nus_write_cb_t write_cb);
 /** Returns true while a client is connected. */
 bool nus_is_connected(void);
 
+/** Returns total number of disconnections since boot. */
+unsigned long nus_disconnect_count(void);
+
+/** nus_notify return codes */
+#define NUS_ERR_NOMEM  (-1)   /**< mbuf pool exhausted — retryable              */
+#define NUS_ERR_CONN   (-2)   /**< not connected / connection error — do not retry */
+
 /**
  * Send up to @p len bytes to the connected BLE client as a NUS TX notification.
- * Silently drops the data if no client is connected or if the NimBLE mbuf
- * pool is exhausted.
  *
- * @return 0 on success, non-zero on failure.
+ * @return 0             success
+ *         NUS_ERR_NOMEM mbuf pool temporarily exhausted — caller should retry
+ *         NUS_ERR_CONN  no connection or fatal send error — caller must NOT retry
  */
 int nus_notify(const uint8_t *data, size_t len);

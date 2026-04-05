@@ -2,7 +2,9 @@ idf_component_register(
     SRCS
         "main.c"
         "ble_nus.c"
-    INCLUDE_DIRS "."
+    INCLUDE_DIRS
+        "."
+        "../boards"
     REQUIRES
         bt
         driver
@@ -10,4 +12,6 @@ idf_component_register(
         esp_driver_gpio
         nvs_flash
         esp_system
+        esp_heap_caps
+        led_strip
 )

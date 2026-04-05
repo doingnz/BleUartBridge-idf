@@ -1,14 +1,4 @@
-# ── Target ───────────────────────────────────────────────────────────────────
-CONFIG_IDF_TARGET="esp32s3"
-
-# ── Console ───────────────────────────────────────────────────────────────────
-# ESP32-S3 is connected via its built-in USB Serial/JTAG controller (not via
-# an external USB-UART chip on GPIO1/3). Make USB Serial/JTAG the primary
-# console so that getchar() reads from USB CDC, not from the hardware UART0
-# RX pin which has nothing connected.
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
-
-# ── Bluetooth ────────────────────────────────────────────────────────────────
+# ── Bluetooth / NimBLE ───────────────────────────────────────────────────────
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 # Disable Bluedroid — NimBLE is used exclusively
@@ -16,6 +6,11 @@ CONFIG_BT_BLUEDROID_ENABLED=n
 
 # Single peripheral connection is sufficient
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+
+# Increase msys mbuf pool — default 12 blocks is insufficient for full-speed
+# bidirectional traffic (both RX writes and TX notifications consume mbufs
+# simultaneously).  24 blocks provides headroom for sustained dual-direction use.
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=24
 
 # Peripheral role only (saves memory vs enabling all roles)
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
@@ -29,7 +24,7 @@ CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512
 # NimBLE host task stack (4 KB is comfortable for this workload)
 CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=4096
 
-# Store NimBLE RAM in internal SRAM for reliability on ESP32-S3
+# Store NimBLE RAM in internal SRAM for reliability
 CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=y
 
 # ── UART ─────────────────────────────────────────────────────────────────────

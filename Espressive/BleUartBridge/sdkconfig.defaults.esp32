@@ -1,0 +1,10 @@
+# ── Target ───────────────────────────────────────────────────────────────────
+CONFIG_IDF_TARGET="esp32"
+
+# ── Flash ─────────────────────────────────────────────────────────────────────
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+
+# ── Console ───────────────────────────────────────────────────────────────────
+# Classic ESP32 has no native USB — console via UART0 (CH340/CP2102 USB-UART chip)
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y

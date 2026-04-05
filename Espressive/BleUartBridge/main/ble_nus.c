@@ -47,12 +47,13 @@ static const ble_uuid128_t NUS_TX_UUID = BLE_UUID128_INIT(
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
-static volatile bool     s_connected    = false;
-static volatile uint16_t s_conn_handle  = BLE_HS_CONN_HANDLE_NONE;
-static uint16_t          s_tx_val_handle;   // ATT handle for TX char value
-static nus_write_cb_t    s_write_cb     = NULL;
-static const char       *s_device_name  = "NUS Bridge";
-static uint8_t           s_own_addr_type;
+static volatile bool          s_connected        = false;
+static volatile uint16_t      s_conn_handle      = BLE_HS_CONN_HANDLE_NONE;
+static volatile unsigned long s_disconnect_count = 0;
+static uint16_t               s_tx_val_handle;   // ATT handle for TX char value
+static nus_write_cb_t         s_write_cb         = NULL;
+static const char            *s_device_name      = "NUS Bridge";
+static uint8_t                s_own_addr_type;
 
 // ── Forward declarations ──────────────────────────────────────────────────────
 
@@ -182,6 +183,33 @@ static void start_advertising(void)
     ESP_LOGI(TAG, "Advertising as '%s'", s_device_name);
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+static void log_conn_params(uint16_t conn_handle)
+{
+    struct ble_gap_conn_desc desc;
+    if (ble_gap_conn_find(conn_handle, &desc) != 0) return;
+    // conn_itvl in units of 1.25 ms; supervision_timeout in units of 10 ms
+    ESP_LOGI(TAG, "  interval=%.1f ms  latency=%u  supervision_timeout=%u ms",
+             desc.conn_itvl * 1.25f,
+             desc.conn_latency,
+             desc.supervision_timeout * 10);
+}
+
+static const char *disconnect_reason_str(uint8_t reason)
+{
+    switch (reason) {
+    case 0x08: return "Supervision timeout (link lost — interference or host overload)";
+    case 0x13: return "Remote user terminated";
+    case 0x16: return "Local host terminated";
+    case 0x22: return "LL response timeout";
+    case 0x28: return "Instant passed";
+    case 0x3B: return "Unacceptable connection parameters";
+    case 0x3E: return "Unspecified error";
+    default:   return "Unknown";
+    }
+}
+
 // ── GAP event handler ─────────────────────────────────────────────────────────
 
 static int gap_event_cb(struct ble_gap_event *event, void *arg)
@@ -195,6 +223,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             s_conn_handle = event->connect.conn_handle;
             s_connected   = true;
             ESP_LOGI(TAG, "Client connected  handle=%d", s_conn_handle);
+            log_conn_params(s_conn_handle);
         } else {
             ESP_LOGW(TAG, "Connection failed  status=%d — restarting advertising",
                      event->connect.status);
@@ -204,8 +233,12 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         break;
 
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "Client disconnected  reason=0x%02x — restarting advertising",
-                 event->disconnect.reason);
+        s_disconnect_count++;
+        ESP_LOGW(TAG, "Client disconnected  reason=0x%02x (%s)  [disconnect #%lu]",
+                 event->disconnect.reason,
+                 disconnect_reason_str(event->disconnect.reason),
+                 s_disconnect_count);
+        ESP_LOGI(TAG, "Restarting advertising");
         s_connected   = false;
         s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         start_advertising();
@@ -217,7 +250,8 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         break;
 
     case BLE_GAP_EVENT_CONN_UPDATE:
-        ESP_LOGD(TAG, "Connection parameters updated");
+        ESP_LOGI(TAG, "Connection parameters updated:");
+        log_conn_params(event->conn_update.conn_handle);
         break;
 
     default:
@@ -308,21 +342,39 @@ bool nus_is_connected(void)
     return s_connected;
 }
 
+unsigned long nus_disconnect_count(void)
+{
+    return s_disconnect_count;
+}
+
+// Return values:
+//   0              success
+//   NUS_ERR_NOMEM  mbuf pool temporarily exhausted — caller should retry
+//   NUS_ERR_CONN   connection gone — caller must NOT retry, discard data
 int nus_notify(const uint8_t *data, size_t len)
 {
-    if (!s_connected || s_conn_handle == BLE_HS_CONN_HANDLE_NONE) return -1;
+    if (!s_connected || s_conn_handle == BLE_HS_CONN_HANDLE_NONE)
+        return NUS_ERR_CONN;
     if (len == 0) return 0;
 
     struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
     if (!om) {
-        ESP_LOGW(TAG, "nus_notify: mbuf alloc failed (len=%u)", (unsigned)len);
-        return -1;
+        ESP_LOGD(TAG, "nus_notify: mbuf alloc failed (len=%u)", (unsigned)len);
+        return NUS_ERR_NOMEM;
     }
 
-    // ble_gatts_notify_custom takes ownership of om and frees it
+    // ble_gatts_notify_custom takes ownership of om and frees it on success
+    // or on error.
     int rc = ble_gatts_notify_custom(s_conn_handle, s_tx_val_handle, om);
     if (rc != 0) {
-        ESP_LOGD(TAG, "ble_gatts_notify_custom: %d", rc);
+        // BLE_HS_ENOMEM: notification queue full — retryable
+        // BLE_HS_ENOTCONN / others: connection gone — fatal for this send
+        if (rc == BLE_HS_ENOMEM) {
+            ESP_LOGD(TAG, "nus_notify: notify queue full — will retry");
+            return NUS_ERR_NOMEM;
+        }
+        ESP_LOGW(TAG, "ble_gatts_notify_custom: rc=%d (connection error)", rc);
+        return NUS_ERR_CONN;
     }
-    return rc;
+    return 0;
 }
