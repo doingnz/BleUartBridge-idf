@@ -7,8 +7,10 @@
 
 // ── Transport clients ─────────────────────────────────────────────────────────
 
-const ble    = new BleNusClient();
-const serial = new SerialPortClient();
+const bleNus    = new BleNusClient();
+const bleBle232 = new BleBle232Client();
+let   ble       = bleNus;   // active BLE client — reassigned by profile selector
+const serial    = new SerialPortClient();
 
 // ── Test state ────────────────────────────────────────────────────────────────
 
@@ -66,8 +68,10 @@ let bleTestGeneration = 0;
 
 // ── Connection event handlers ─────────────────────────────────────────────────
 
-ble.onConnect    = () => updateConnectionUI();
-ble.onDisconnect = () => { stopAllTests(); updateConnectionUI(); };
+for (const client of [bleNus, bleBle232]) {
+    client.onConnect    = () => updateConnectionUI();
+    client.onDisconnect = () => { stopAllTests(); updateConnectionUI(); };
+}
 
 serial.onConnect    = () => updateConnectionUI();
 serial.onDisconnect = () => { stopAllTests(); updateConnectionUI(); };
@@ -76,7 +80,7 @@ serial.onDisconnect = () => { stopAllTests(); updateConnectionUI(); };
 // Both handlers await onData (via the transport impls) so that a simulated
 // delay blocks the read loop and creates real backpressure.
 
-ble.onData = async (data) => {
+async function onBleData(data) {
     // Capture generation NOW (at event-queue time) so we can detect if the
     // test was restarted while this handler was sitting in _notifyQueue.
     const gen = comTestGeneration;
@@ -88,7 +92,8 @@ ble.onData = async (data) => {
         comTest.recvBytes += data.length;
         comTest.parser.feed(data);
     }
-};
+}
+bleNus.onData = bleBle232.onData = onBleData;
 
 serial.onData = async (data) => {
     const gen = bleTestGeneration;
@@ -402,6 +407,16 @@ function fmtLat(ms) { return ms === Infinity || ms === 0 ? '—' : ms.toFixed(1)
 
 function $ (id) { return document.getElementById(id); }
 
+// BLE profile selector
+const BLE_PROFILE_HINTS = {
+    nus:    'Nordic NUS (6E400001…) — BP+ Bridge',
+    ble232: 'BLE232 (0003ABCD…)',
+};
+$('sel-ble-profile').addEventListener('change', (e) => {
+    ble = e.target.value === 'ble232' ? bleBle232 : bleNus;
+    $('ble-hint').textContent = BLE_PROFILE_HINTS[e.target.value] || '';
+});
+
 // BLE connect
 $('btn-ble-connect').addEventListener('click', async () => {
     if (!ble.isAvailable) { alert('Web Bluetooth is not available in this browser.'); return; }
@@ -489,6 +504,7 @@ function updateConnectionUI() {
     $('ble-status').textContent = bleOk ? 'Connected  (' + (ble._device?.name || 'device') + ')' : 'Not connected';
     $('btn-ble-connect').hidden    = bleOk;
     $('btn-ble-disconnect').hidden = !bleOk;
+    $('sel-ble-profile').disabled  = bleOk;
 
     // Serial card
     const apiName = serial.isWebSerial ? 'WebSerial' : 'WebUSB (PL2303)';

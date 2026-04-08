@@ -182,6 +182,12 @@ public partial class MainViewModel : ObservableObject
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         try   { await _scanner.StartAsync(cts.Token); }
         catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            BleStatus = $"BLE error: {ex.Message}";
+            IsScanning = false;
+            return;
+        }
         finally
         {
             IsScanning = false;
@@ -215,17 +221,9 @@ public partial class MainViewModel : ObservableObject
             BleStatus = "Connecting…";
             if (_scanner.IsScanning) await _scanner.StopAsync();
 
-            // Auto-detect profile from already-connected device list via BleProfileDetector
-            // For connect, we use NUS as default since that's what the bridge uses;
-            // the user can override by selecting a different device advertisement.
-            // We attempt connection then detect the profile.
-            var profile = WellKnownBleProfiles.KnownProfiles
-                .FirstOrDefault(p => p.Name == "Nordic NUS")
-                ?? WellKnownBleProfiles.KnownProfiles[0];
-
-            await _ble.ConnectAsync(SelectedBleDevice, profile);
+            await _ble.ConnectAsync(SelectedBleDevice, profile: null);
             IsBleConnected = true;
-            BleStatus = $"Connected ({profile.Name})";
+            BleStatus = $"Connected ({_ble.ConnectedProfile?.Name ?? "unknown profile"})";
         }
         catch (Exception ex)
         {

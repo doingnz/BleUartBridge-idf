@@ -9,24 +9,58 @@ public sealed class RawBleClient : IRawBleClient
     private IDevice?         _device;
     private ICharacteristic? _txChar;
     private ICharacteristic? _rxChar;
-    private const int        MtuPayload = 128; // matches ESP32 BLE_CHUNK
+    private const int        DefaultMtuPayload = 128; // matches ESP32 BLE_CHUNK
+    private int              _chunkSize = DefaultMtuPayload;
 
     public bool IsConnected => _device?.State == Plugin.BLE.Abstractions.DeviceState.Connected;
+    public BleGattProfile? ConnectedProfile { get; private set; }
 
     public event EventHandler<byte[]>? DataReceived;
     public event EventHandler?         Disconnected;
 
-    public async Task ConnectAsync(BleDeviceInfo info, BleGattProfile profile,
+    public async Task ConnectAsync(BleDeviceInfo info, BleGattProfile? profile,
                                    CancellationToken ct = default)
     {
-        var adapter = CrossBluetoothLE.Current.Adapter;
+        // Resolve the adapter on a thread-pool thread so Plugin.BLE's blocking WinRT call
+        // (GetDefaultAsync().AsTask().Result inside InitializeNative) can complete without
+        // deadlocking the UI thread on .NET 10 Windows.
+        var adapter = await Task.Run(() => CrossBluetoothLE.Current.Adapter, ct);
 
         adapter.DeviceDisconnected += OnDeviceDisconnected;
 
         _device = await adapter.ConnectToKnownDeviceAsync(info.Id, cancellationToken: ct);
 
-        var service = await _device.GetServiceAsync(profile.ServiceUuid, ct)
-            ?? throw new InvalidOperationException($"Service {profile.ServiceUuid} not found.");
+        // Auto-detect profile if none was specified.
+        profile ??= await BleProfileDetector.DetectAsync(_device, ct)
+            ?? throw new InvalidOperationException(
+                "No recognised BLE UART profile found on this device. " +
+                "Ensure it is a supported BLE serial adapter.");
+
+        ConnectedProfile = profile;
+        _chunkSize = profile.MaxPayloadBytes > 0 ? profile.MaxPayloadBytes : DefaultMtuPayload;
+
+        IService service;
+        if (profile.ServiceUuid == Guid.Empty)
+        {
+            // Service UUID not published for this profile — scan all GATT services
+            // and find the one that contains the expected characteristics.
+            var services = await _device.GetServicesAsync(ct);
+            IService? found = null;
+            foreach (var svc in services)
+            {
+                var chars = await svc.GetCharacteristicsAsync(ct);
+                bool hasTx = chars.Any(c => c.Id == profile.TxCharUuid);
+                bool hasRx = profile.Bidirectional ? hasTx : chars.Any(c => c.Id == profile.RxCharUuid);
+                if (hasTx && hasRx) { found = svc; break; }
+            }
+            service = found ?? throw new InvalidOperationException(
+                $"No GATT service found containing {profile.Name} characteristics.");
+        }
+        else
+        {
+            service = await _device.GetServiceAsync(profile.ServiceUuid, ct)
+                ?? throw new InvalidOperationException($"Service {profile.ServiceUuid} not found.");
+        }
 
         _txChar = await service.GetCharacteristicAsync(profile.TxCharUuid)
             ?? throw new InvalidOperationException("TX characteristic not found.");
@@ -44,10 +78,10 @@ public sealed class RawBleClient : IRawBleClient
     {
         if (_txChar is null) throw new InvalidOperationException("Not connected.");
 
-        for (int offset = 0; offset < data.Length; offset += MtuPayload)
+        for (int offset = 0; offset < data.Length; offset += _chunkSize)
         {
             ct.ThrowIfCancellationRequested();
-            int count = Math.Min(MtuPayload, data.Length - offset);
+            int count = Math.Min(_chunkSize, data.Length - offset);
             byte[] chunk = data[offset..(offset + count)];
             await _txChar.WriteAsync(chunk, ct);
         }
@@ -70,9 +104,11 @@ public sealed class RawBleClient : IRawBleClient
         }
         catch { }
 
-        _device  = null;
-        _txChar  = null;
-        _rxChar  = null;
+        _device          = null;
+        _txChar          = null;
+        _rxChar          = null;
+        _chunkSize       = DefaultMtuPayload;
+        ConnectedProfile = null;
     }
 
     private void OnValueUpdated(object? sender, Plugin.BLE.Abstractions.EventArgs.CharacteristicUpdatedEventArgs e)

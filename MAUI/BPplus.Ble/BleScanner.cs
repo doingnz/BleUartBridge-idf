@@ -29,7 +29,14 @@ public sealed class BleScanner : IBleScanner
     public async Task StartAsync(CancellationToken ct = default)
     {
         _seen.Clear();
-        var adapter = Adapter;
+
+        // Plugin.BLE's Windows implementation calls BluetoothAdapter.GetDefaultAsync().AsTask().Result
+        // inside its constructor/InitializeNative.  On .NET 10 the WinRT completion callback
+        // cannot be dispatched back to the blocked UI (STA) thread, causing a deadlock / NRE.
+        // Force the first access — and therefore the blocking WinRT call — onto a thread-pool
+        // (MTA) thread where the async completion can complete freely.
+        var adapter = await Task.Run(() => Adapter, ct);
+
         adapter.DeviceDiscovered += OnDeviceDiscovered;
         await adapter.StartScanningForDevicesAsync(cancellationToken: ct);
     }

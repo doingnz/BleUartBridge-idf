@@ -51,6 +51,20 @@ public static class WellKnownBleProfiles
         RxCharUuid:    Guid.Parse("0000FFF1-0000-1000-8000-00805F9B34FB"),
         Bidirectional: true);
 
+    /// <summary>
+    /// USConverters BLE232 (ESP32 version of CY8C4128 based BLE RS-232 adapter).
+    /// Despite the different product name, this device uses the same GATT profile
+    /// as the S2B5232I: service 0003ABCD-…-0131, characteristics 00031202 (Write)
+    /// and 00031201 (Notify).
+    /// </summary>
+    public static readonly BleGattProfile BLE232 = new(
+        Name:            "BLE232",
+        ServiceUuid:     Guid.Parse("0003ABCD-0000-1000-8000-00805F9B0131"),
+        TxCharUuid:      Guid.Parse("00031202-0000-1000-8000-00805F9B0130"),  // Write (app→device)
+        RxCharUuid:      Guid.Parse("00031201-0000-1000-8000-00805F9B0130"),  // Notify (device→app)
+        Bidirectional:   false,
+        MaxPayloadBytes: 244);
+
     public static IReadOnlyList<BleGattProfile> KnownProfiles { get; } =
-        [S2B5232I, NordicNus, Rn4870, Hm10, Hm10Clone];
+        [S2B5232I, NordicNus, Rn4870, Hm10, Hm10Clone, BLE232];
 }
