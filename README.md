@@ -15,3 +15,7 @@ BLE client  ◄──NUS notify / write──►  ESP32 / ESP32-S3  ◄──UAR
 | [`Espressive/BleUartBridge`](Espressive/BleUartBridge/README.md) | ESP-IDF firmware for ESP32 and ESP32-S3 |
 | [`MAUI/BleUartBridgeTester`](MAUI/BleUartBridgeTester/README.md) | .NET MAUI test app (Windows / Android) |
 | [`JavaScript/BleUartBridgeTester`](JavaScript/BleUartBridgeTester/README.md) | Web Bluetooth test page (Chrome / Edge) |
+
+## License
+
+[MIT](LICENSE)
