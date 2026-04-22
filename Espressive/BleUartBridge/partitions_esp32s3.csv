@@ -1,0 +1,23 @@
+# ESP32-S3 DevKit (S3-N16R8) — 16 MB flash
+#
+# Two maximal OTA app slots for BLE firmware updates.
+# Layout (offsets in hex):
+#   0x000000  bootloader        (reserved by IDF, not in this table)
+#   0x008000  partition table   (reserved by IDF)
+#   0x009000  nvs          24 KB   settings + NimBLE bonding
+#   0x00F000  otadata       8 KB   OTA boot-slot pointer
+#   0x011000  phy_init      4 KB
+#   0x020000  ota_0      7.875 MB  app slot A
+#   0x800000  ota_1      7.875 MB  app slot B
+#   0xFE0000  (128 KB tail unallocated — reserved for future e.g. LittleFS)
+#
+# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y: if a freshly-booted image never
+# calls esp_ota_mark_app_valid_cancel_rollback() before the next reset, the
+# bootloader reverts to the previous slot.
+#
+# Name,     Type, SubType,  Offset,    Size
+nvs,        data, nvs,      0x009000,  0x006000
+otadata,    data, ota,      0x00F000,  0x002000
+phy_init,   data, phy,      0x011000,  0x001000
+ota_0,      app,  ota_0,    0x020000,  0x7E0000
+ota_1,      app,  ota_1,    0x800000,  0x7E0000

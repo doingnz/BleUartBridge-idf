@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BP+ Bridge — Management</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.4 system-ui, sans-serif; max-width: 900px; margin: 1rem auto; padding: 0 1rem; }
+  h1 { margin: 0 0 0.5rem; }
+  h2 { margin: 1.5rem 0 0.5rem; font-size: 1rem; }
+  section { border: 1px solid #8885; border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; }
+  button { padding: 0.35rem 0.75rem; border-radius: 4px; border: 1px solid #8885; background: #fff2; cursor: pointer; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  input[type=text], input[type=number], input[type=password], select {
+    padding: 0.25rem 0.4rem; border-radius: 4px; border: 1px solid #8885; background: #fff1;
+  }
+  /* Chrome on Windows renders <option> elements using the OS-native listbox,
+     which ignores the page's color-scheme and inherits this document's text
+     color.  In dark-mode that produces white text on a white dropdown list.
+     Pin both to explicit values that work against the native dropdown
+     background in either theme. */
+  select      { color: CanvasText; background-color: Canvas; }
+  select option { color: CanvasText; background-color: Canvas; }
+  @media (prefers-color-scheme: dark) {
+    select, select option { color: #eee; background-color: #222; }
+  }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 0.25rem 0.4rem; border-bottom: 1px solid #8882; }
+  th { font-weight: 600; }
+  code { background: #8881; padding: 0.05rem 0.3rem; border-radius: 3px; }
+  .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin: 0.35rem 0; }
+  .row label { min-width: 11rem; }
+  #log { font-family: ui-monospace, monospace; background: #0001; padding: 0.5rem; border-radius: 4px;
+         height: 12rem; overflow: auto; white-space: pre; font-size: 12px; }
+  .pill { display: inline-block; padding: 0.05rem 0.5rem; border-radius: 999px; background: #8883; font-size: 0.85em; }
+  .pill.ok { background: #2a82; color: #0b4; }
+  .pill.bad { background: #a222; color: #c00; }
+  .pill.warn { background: #fd42; color: #c80; }
+  progress { width: 100%; height: 1rem; }
+</style>
+</head>
+<body>
+
+<h1>BP+ Bridge &mdash; Management</h1>
+<div class="row">
+  <button id="btn-connect">Connect</button>
+  <button id="btn-disconnect" disabled>Disconnect</button>
+  <span class="pill" id="conn-pill">disconnected</span>
+</div>
+
+<section id="info-section" hidden>
+  <h2>Device</h2>
+  <table id="info-table"></table>
+</section>
+
+<section id="auth-section" hidden>
+  <h2>Authentication</h2>
+  <div class="row">
+    <label for="master-key">Master key (64 hex chars)</label>
+    <input type="password" id="master-key" size="68" autocomplete="off">
+    <button id="btn-authenticate">Authenticate</button>
+    <button id="btn-forget-key">Forget key</button>
+    <span class="pill" id="auth-pill">idle</span>
+  </div>
+</section>
+
+<section id="cfg-section" hidden>
+  <h2>Configuration</h2>
+  <div class="row">
+    <button id="btn-cfg-read">Read all</button>
+    <button id="btn-cfg-commit" disabled>Commit changes</button>
+    <button id="btn-cfg-reset">Factory reset…</button>
+    <span class="pill" id="cfg-pill">&nbsp;</span>
+  </div>
+  <table id="cfg-table"></table>
+</section>
+
+<section id="dfu-section" hidden>
+  <h2>Firmware update</h2>
+  <div class="row">
+    <label for="file-bin">Firmware (.bin)</label>
+    <input type="file" id="file-bin" accept=".bin">
+  </div>
+  <div class="row">
+    <label for="file-sig">Signature (.bin.sig)</label>
+    <input type="file" id="file-sig" accept=".sig">
+  </div>
+  <div class="row">
+    <label for="fw-version">Version (u32)</label>
+    <input type="number" id="fw-version" value="1" min="0" step="1">
+    <span id="sha-display" style="font-family:ui-monospace,monospace;font-size:12px;"></span>
+  </div>
+  <div class="row">
+    <button id="btn-flash" disabled>Flash</button>
+    <button id="btn-dfu-abort" disabled>Abort</button>
+    <span class="pill" id="dfu-pill">idle</span>
+  </div>
+  <progress id="dfu-progress" value="0" max="1"></progress>
+  <div id="dfu-status" style="font-size:12px;"></div>
+</section>
+
+<section>
+  <h2>Log</h2>
+  <div id="log"></div>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

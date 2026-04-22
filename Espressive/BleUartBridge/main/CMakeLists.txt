@@ -2,6 +2,12 @@ idf_component_register(
     SRCS
         "main.c"
         "ble_nus.c"
+        "ble_mgmt.c"
+        "auth.c"
+        "cfg.c"
+        "dfu.c"
+        "sha256.c"
+        "verify_ecdsa.c"
     INCLUDE_DIRS
         "."
         "../boards"
@@ -12,5 +18,7 @@ idf_component_register(
         esp_driver_gpio
         nvs_flash
         esp_system
+        app_update
+        mbedtls
         led_strip
 )

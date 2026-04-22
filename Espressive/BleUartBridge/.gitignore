@@ -1,4 +1,20 @@
 build/
 managed_components/
 sdkconfig
+sdkconfig.old
 .claude/
+
+# ── Secrets and signing material (DO NOT commit) ─────────────────────────────
+# Per-installation master key (HMAC(master_key, mac) → device auth secret).
+# secrets.example.h IS committed as a template.
+main/secrets.h
+# Firmware signing private key.  The public key IS committed via
+# main/signing_pubkey.h so firmware builds ship the fleet's trusted pubkey.
+keys/*private*.pem
+keys/*private*.der
+# Per-user host tool config (master key lives here in plaintext).
+host/config/*.json
+
+# ── .NET build artefacts (host/BpDfuCli) ────────────────────────────────────
+host/BpDfuCli/bin/
+host/BpDfuCli/obj/

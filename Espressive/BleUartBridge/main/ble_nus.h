@@ -42,6 +42,14 @@ unsigned long nus_disconnect_count(void);
 /** Resets the disconnection counter to zero. */
 void nus_reset_disconnect_count(void);
 
+/**
+ * Stop and restart advertising so it picks up the current cfg_values
+ * (advertising interval, TX power).  Safe to call from any task.  Has no
+ * effect while a client is connected; takes effect on the next advertising
+ * cycle after disconnect.
+ */
+void nus_restart_advertising(void);
+
 /** nus_notify return codes */
 #define NUS_ERR_NOMEM  (-1)   /**< mbuf pool exhausted — retryable              */
 #define NUS_ERR_CONN   (-2)   /**< not connected / connection error — do not retry */

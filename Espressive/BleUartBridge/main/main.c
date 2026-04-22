@@ -58,13 +58,17 @@
 #endif
 
 #include "ble_nus.h"
+#include "ble_mgmt.h"
+#include "cfg.h"
+#include "dfu.h"
+#include "esp_ota_ops.h"
+#include "esp_app_desc.h"
 
 static const char *TAG = "BRIDGE";
 
 // ── Bridge parameters ─────────────────────────────────────────────────────────
 
 #define UART_PORT       UART_NUM_1
-#define UART_BAUD       115200
 #define UART_RX_BUF     4096    // UART driver RX ring buffer
 
 #define BLE_DEVICE_NAME_PREFIX "BP+ Bridge"
@@ -82,6 +86,7 @@ static volatile unsigned long bytes_from_uart     = 0;
 static volatile unsigned long bytes_dropped_tx    = 0;  // BLE→UART queue-full drops
 static volatile unsigned long nomem_retries_total = 0;  // cumulative NUS_ERR_NOMEM retries
 static volatile unsigned long nomem_last_ms       = 0;  // duration of last NOMEM episode
+static volatile unsigned long bytes_dropped_dfu   = 0;  // UART bytes discarded during DFU
 
 // ── UART TX queue (BLE → UART direction) ─────────────────────────────────────
 // on_ble_write() runs on the NimBLE host task (core 0).  Calling uart_write_bytes()
@@ -153,7 +158,14 @@ static void led_task(void *arg)
 {
     led_init();
     for (;;) {
-        if (nus_is_connected()) {
+        if (ble_mgmt_dfu_active()) {
+            // DFU in progress: rapid pulse.  Cyan on S3 (WS2812 sees G+B),
+            // fast GPIO blink on classic ESP32.
+            led_set(0, 8, 8);
+            vTaskDelay(pdMS_TO_TICKS(125));
+            led_set(0, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(125));
+        } else if (nus_is_connected()) {
             led_set(0, 0, 8);           // dim blue: connected
             vTaskDelay(pdMS_TO_TICKS(100));
         } else {
@@ -210,6 +222,11 @@ static void hex_dump(const char *dir, const uint8_t *data, size_t len)
 // hardware CTS flow control allows; the client should retry after a short delay.
 static int on_ble_write(const uint8_t *data, size_t len)
 {
+    // DFU owns the airtime during an update — reject bridge traffic so the
+    // client sees an ATT error rather than silently having bytes reordered
+    // against the DFU chunks going the other way.
+    if (ble_mgmt_dfu_active()) return 1;
+
     hex_dump("BLE→UART", data, len);
 
     if (len == 0 || len > TX_MAX_LEN) return 0;  // ignore empty / oversized
@@ -255,6 +272,20 @@ static void uart_rx_task(void *arg)
     ESP_LOGI(TAG, "UART→BLE task started");
 
     for (;;) {
+        // Suspend the bridge entirely while DFU is in progress.  We still
+        // drain the UART ring buffer so the peer's TX is not wedged by our
+        // RTS threshold, but the bytes are discarded — the client is updating
+        // firmware, not talking to the downstream device.
+        if (ble_mgmt_dfu_active()) {
+            uint8_t drop[128];
+            int n = uart_read_bytes(UART_PORT, drop, sizeof(drop),
+                                    pdMS_TO_TICKS(20));
+            if (n > 0) bytes_dropped_dfu += n;
+            pending_n   = 0;
+            retry_count = 0;
+            continue;
+        }
+
         // Only read new data once the previous chunk has been sent.
         //
         // Backpressure mechanism: when nus_notify() returns NUS_ERR_NOMEM we
@@ -320,29 +351,117 @@ static void uart_rx_task(void *arg)
 
 static void uart_init(void)
 {
+    const cfg_values_t *v = cfg_values();
+
+    uart_word_length_t db;
+    switch (v->uart_databits) {
+        case 5: db = UART_DATA_5_BITS; break;
+        case 6: db = UART_DATA_6_BITS; break;
+        case 7: db = UART_DATA_7_BITS; break;
+        default: db = UART_DATA_8_BITS; break;
+    }
+    uart_parity_t par;
+    switch (v->uart_parity) {
+        case 1:  par = UART_PARITY_EVEN;    break;
+        case 2:  par = UART_PARITY_ODD;     break;
+        default: par = UART_PARITY_DISABLE; break;
+    }
+    uart_stop_bits_t sb = (v->uart_stopbits == 2) ? UART_STOP_BITS_2 : UART_STOP_BITS_1;
+    uart_hw_flowcontrol_t fc = v->uart_flowctrl ? UART_HW_FLOWCTRL_CTS_RTS
+                                                : UART_HW_FLOWCTRL_DISABLE;
+
     uart_config_t cfg = {
-        .baud_rate           = UART_BAUD,
-        .data_bits           = UART_DATA_8_BITS,
-        .parity              = UART_PARITY_DISABLE,
-        .stop_bits           = UART_STOP_BITS_1,
-        .flow_ctrl           = UART_HW_FLOWCTRL_CTS_RTS,
+        .baud_rate           = (int)v->uart_baud,
+        .data_bits           = db,
+        .parity              = par,
+        .stop_bits           = sb,
+        .flow_ctrl           = fc,
         .rx_flow_ctrl_thresh = FC_THRESH,
         .source_clk          = UART_SCLK_DEFAULT,
     };
 
     ESP_ERROR_CHECK(uart_param_config(UART_PORT, &cfg));
-    ESP_ERROR_CHECK(uart_set_pin(UART_PORT, TX_PIN, RX_PIN, RTS_PIN, CTS_PIN));
+    ESP_ERROR_CHECK(uart_set_pin(UART_PORT, TX_PIN, RX_PIN,
+                                 v->uart_flowctrl ? RTS_PIN : UART_PIN_NO_CHANGE,
+                                 v->uart_flowctrl ? CTS_PIN : UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_driver_install(UART_PORT,
                                         UART_RX_BUF, /* rx_buffer_size */
                                         0,           /* tx_buffer_size: 0 = no SW buffer,
                                                         writes block when HW TX FIFO full */
                                         0, NULL, 0));
 
-    ESP_LOGI(TAG, "UART1 ready  TX=%d RX=%d RTS=%d CTS=%d  %d baud  RTS threshold=%d",
-             TX_PIN, RX_PIN, RTS_PIN, CTS_PIN, UART_BAUD, FC_THRESH);
+    ESP_LOGI(TAG, "UART1 ready  TX=%d RX=%d RTS=%d CTS=%d  %lu baud  %u%c%u  flow=%s",
+             TX_PIN, RX_PIN,
+             v->uart_flowctrl ? RTS_PIN : -1,
+             v->uart_flowctrl ? CTS_PIN : -1,
+             (unsigned long)v->uart_baud,
+             v->uart_databits,
+             v->uart_parity == 1 ? 'E' : v->uart_parity == 2 ? 'O' : 'N',
+             v->uart_stopbits,
+             v->uart_flowctrl ? "RTS/CTS" : "none");
 }
 
 // ── Interactive console ────────────────────────────────────────────────────────
+
+// ── Live-apply callback for runtime-tunable settings ─────────────────────────
+// Invoked from cfg_commit() whenever any TLV tagged live_apply changed.
+// Compares against the previous applied values so we only act on the fields
+// that moved.  Reboot-apply TLVs (baud, flow control, etc.) are NOT handled
+// here — they are read once at boot by uart_init() and nus_init().
+static cfg_values_t s_prev_applied;        // seeded in app_main after cfg_init
+
+static void cfg_live_apply(const cfg_values_t *v)
+{
+    if (v->hexdump_default != s_prev_applied.hexdump_default) {
+        hex_dump_on = (v->hexdump_default != 0);
+        ESP_LOGI(TAG, "[cfg] hex dump %s", hex_dump_on ? "ON" : "OFF");
+    }
+    if (v->ble_adv_interval_ms != s_prev_applied.ble_adv_interval_ms) {
+        ESP_LOGI(TAG, "[cfg] adv interval → %u ms", v->ble_adv_interval_ms);
+        nus_restart_advertising();
+    }
+    /* TX power and auth/dfu flags are read on-demand by the code that uses
+     * them (ble_mgmt for auth_required, dfu.c for dfu_enabled).  TX power
+     * live-apply is deferred: NimBLE on IDF sets TX power through
+     * esp_ble_tx_power_set(), which requires a per-target dBm→level mapping;
+     * reboot-apply is acceptable for now. */
+
+    s_prev_applied = *v;
+}
+
+static void print_info(void)
+{
+    const esp_app_desc_t *app = esp_app_get_description();
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *next    = esp_ota_get_next_update_partition(NULL);
+
+    esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
+    if (running) esp_ota_get_state_partition(running, &st);
+    const char *st_str;
+    switch (st) {
+        case ESP_OTA_IMG_NEW:             st_str = "new";             break;
+        case ESP_OTA_IMG_PENDING_VERIFY:  st_str = "pending-verify";  break;
+        case ESP_OTA_IMG_VALID:           st_str = "valid";           break;
+        case ESP_OTA_IMG_INVALID:         st_str = "invalid";         break;
+        case ESP_OTA_IMG_ABORTED:         st_str = "aborted";         break;
+        default:                          st_str = "undefined";       break;
+    }
+
+    ESP_LOGI(TAG, "── Info ────────────────────────────────");
+    ESP_LOGI(TAG, " App        : %s %s", app->project_name, app->version);
+    ESP_LOGI(TAG, " Built      : %s %s", app->date, app->time);
+    ESP_LOGI(TAG, " IDF        : %s", app->idf_ver);
+    ESP_LOGI(TAG, " Running    : %s  @0x%06lx (%lu KB)  state=%s",
+             running ? running->label : "?",
+             running ? (unsigned long)running->address : 0UL,
+             running ? (unsigned long)(running->size / 1024) : 0UL,
+             st_str);
+    ESP_LOGI(TAG, " Next OTA   : %s  @0x%06lx (%lu KB)",
+             next ? next->label : "?",
+             next ? (unsigned long)next->address : 0UL,
+             next ? (unsigned long)(next->size / 1024) : 0UL);
+    ESP_LOGI(TAG, "────────────────────────────────────────");
+}
 
 static void print_status(void)
 {
@@ -358,6 +477,8 @@ static void print_status(void)
     ESP_LOGI(TAG, " ←UART      : %lu bytes", bytes_from_uart);
     ESP_LOGI(TAG, " TX rejected: %lu bytes  (BLE→UART queue-full; ATT error sent, client retries)", bytes_dropped_tx);
     ESP_LOGI(TAG, " NOMEM retry: %lu total  (last episode: %lu ms)", nomem_retries_total, nomem_last_ms);
+    ESP_LOGI(TAG, " DFU drop   : %lu bytes  (UART→BLE discarded while DFU in progress)", bytes_dropped_dfu);
+    ESP_LOGI(TAG, " DFU state  : %s", ble_mgmt_dfu_active() ? "ACTIVE" : "idle");
     ESP_LOGI(TAG, " UART hwBuf : %u bytes", (unsigned)hw_buf);
     ESP_LOGI(TAG, " TX q depth : %u / %d",
              (unsigned)(TX_Q_DEPTH - uxQueueSpacesAvailable(s_uart_tx_q)), TX_Q_DEPTH);
@@ -377,21 +498,38 @@ void app_main(void)
     const char *board = "ESP32 DevKit";
 #endif
 
-    // Build a unique device name from the last 4 hex digits of the BLE MAC
-    // address so multiple bridges are distinguishable during BLE scanning.
-    // esp_read_mac(ESP_MAC_BT) returns the same address shown in the
-    // advertising log and in scanner apps.
+    // Load NVS-backed configuration before anything that depends on it (UART
+    // baud/bits, hex dump default, device-name suffix override).
+    cfg_init();
+    hex_dump_on = (cfg_values()->hexdump_default != 0);
+
+    // Seed the live-apply baseline with the current cached values so the
+    // first commit doesn't spuriously "reapply" values that were loaded from
+    // NVS at boot.
+    s_prev_applied = *cfg_values();
+    cfg_register_live_cb(cfg_live_apply);
+
+    // Build a unique device name.  If CFG_NAME_SUFFIX is set use it; otherwise
+    // derive the suffix from the last 4 hex digits of the BLE MAC so multiple
+    // bridges are distinguishable during scanning.
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_BT);
     char ble_device_name[32];
-    snprintf(ble_device_name, sizeof(ble_device_name),
-             "%s %02X%02X", BLE_DEVICE_NAME_PREFIX, mac[4], mac[5]);
+    const char *ns = cfg_values()->name_suffix;
+    if (ns[0] != '\0') {
+        snprintf(ble_device_name, sizeof(ble_device_name),
+                 "%s %s", BLE_DEVICE_NAME_PREFIX, ns);
+    } else {
+        snprintf(ble_device_name, sizeof(ble_device_name),
+                 "%s %02X%02X", BLE_DEVICE_NAME_PREFIX, mac[4], mac[5]);
+    }
 
     ESP_LOGI(TAG, "================================");
     ESP_LOGI(TAG, "  BLE UART Bridge  —  %s", board);
     ESP_LOGI(TAG, "================================");
-    ESP_LOGI(TAG, " UART : TX=%d  RX=%d  RTS=%d  CTS=%d  %d baud",
-             TX_PIN, RX_PIN, RTS_PIN, CTS_PIN, UART_BAUD);
+    ESP_LOGI(TAG, " UART : TX=%d  RX=%d  RTS=%d  CTS=%d  %lu baud",
+             TX_PIN, RX_PIN, RTS_PIN, CTS_PIN,
+             (unsigned long)cfg_values()->uart_baud);
     ESP_LOGI(TAG, " BLE  : '%s'  MTU=%d  chunk=%d",
              ble_device_name, BLE_MTU, BLE_CHUNK);
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -399,8 +537,9 @@ void app_main(void)
 #else
     ESP_LOGI(TAG, " LED  : GPIO%d — blink=advertising  steady=connected", LED_PIN);
 #endif
-    ESP_LOGI(TAG, " Dump : OFF  (send 'h' to toggle)");
-    ESP_LOGI(TAG, " Commands: h=hex dump  n=NimBLE log  s=status  c=clear stats");
+    ESP_LOGI(TAG, " Dump : %s  (send 'h' to toggle)", hex_dump_on ? "ON" : "OFF");
+    ESP_LOGI(TAG, " Commands: h=hex  n=NimBLE log  s=status  c=clear stats");
+    ESP_LOGI(TAG, "           i=info  r=factory reset");
 
     // Suppress NimBLE host INFO logs by default — they fire on every notify()
     // call and flood the console during active data transfer.
@@ -425,6 +564,12 @@ void app_main(void)
     // LED status task pinned to core 1
     xTaskCreatePinnedToCore(led_task, "led",
                             2048, NULL, 3, NULL, 1);
+
+    // If this boot is running a freshly-flashed image, start the health
+    // watchdog that will call esp_ota_mark_app_valid_cancel_rollback() once
+    // the system has been stable for DFU_HEALTH_WAIT_MS.  No-op if the
+    // running image is not in the PENDING_VERIFY state.
+    dfu_start_health_monitor();
 
     // app_main becomes the interactive console loop
     ESP_LOGI(TAG, "Ready. Waiting for BLE connection…");
@@ -457,8 +602,28 @@ void app_main(void)
             bytes_dropped_tx     = 0;
             nomem_retries_total  = 0;
             nomem_last_ms        = 0;
+            bytes_dropped_dfu    = 0;
             nus_reset_disconnect_count();
             ESP_LOGI(TAG, "[CMD] Stats cleared");
+            break;
+        case 'i': case 'I':
+            print_info();
+            break;
+        case 'r': case 'R':
+            ESP_LOGW(TAG, "[CMD] Factory reset? Press 'Y' to confirm within 5 s...");
+            // Simple confirmation: next getchar within timeout must be Y.
+            {
+                TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(5000);
+                bool confirmed = false;
+                while (xTaskGetTickCount() < deadline) {
+                    int ch = getchar();
+                    if (ch == EOF) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+                    if (ch == 'Y' || ch == 'y') { confirmed = true; break; }
+                    break;
+                }
+                if (confirmed) cfg_factory_reset();   // does not return
+                ESP_LOGI(TAG, "[CMD] Factory reset aborted");
+            }
             break;
         default:
             break;

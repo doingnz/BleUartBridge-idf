@@ -15,6 +15,8 @@
  */
 
 #include "ble_nus.h"
+#include "ble_mgmt.h"
+#include "cfg.h"
 
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -173,9 +175,17 @@ static void start_advertising(void)
         ESP_LOGW(TAG, "ble_gap_adv_rsp_set_fields: %d (non-fatal)", rc);
     }
 
+    // Advertising interval: configured in ms, BLE stack expects 0.625 ms units.
+    const cfg_values_t *cfg = cfg_values();
+    uint32_t itvl_units = ((uint32_t)cfg->ble_adv_interval_ms * 1000) / 625;
+    if (itvl_units < 0x0020) itvl_units = 0x0020;   // 20 ms floor per Bluetooth spec
+    if (itvl_units > 0x4000) itvl_units = 0x4000;   // 10.24 s ceiling
+
     struct ble_gap_adv_params params = {0};
     params.conn_mode = BLE_GAP_CONN_MODE_UND;  // connectable undirected
     params.disc_mode = BLE_GAP_DISC_MODE_GEN;  // general discoverable
+    params.itvl_min  = (uint16_t)itvl_units;
+    params.itvl_max  = (uint16_t)itvl_units;
 
     rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER,
                            &params, gap_event_cb, NULL);
@@ -184,7 +194,16 @@ static void start_advertising(void)
         return;
     }
 
-    ESP_LOGI(TAG, "Advertising as '%s'", s_device_name);
+    ESP_LOGI(TAG, "Advertising as '%s'  itvl=%u ms",
+             s_device_name, cfg->ble_adv_interval_ms);
+}
+
+void nus_restart_advertising(void)
+{
+    // Only meaningful while disconnected; ble_gap_adv_stop() is a no-op if
+    // no advertising is active, so call it unconditionally for simplicity.
+    ble_gap_adv_stop();
+    if (!s_connected) start_advertising();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -228,6 +247,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             s_connected   = true;
             ESP_LOGI(TAG, "Client connected  handle=%d", s_conn_handle);
             log_conn_params(s_conn_handle);
+            ble_mgmt_on_connect(s_conn_handle);
         } else {
             ESP_LOGW(TAG, "Connection failed  status=%d — restarting advertising",
                      event->connect.status);
@@ -245,12 +265,14 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         ESP_LOGI(TAG, "Restarting advertising");
         s_connected   = false;
         s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        ble_mgmt_on_disconnect();
         start_advertising();
         break;
 
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "MTU exchanged: conn=%d mtu=%d",
                  event->mtu.conn_handle, event->mtu.value);
+        ble_mgmt_on_mtu(event->mtu.value);
         break;
 
     case BLE_GAP_EVENT_CONN_UPDATE:
@@ -282,6 +304,10 @@ static void on_sync(void)
     ble_hs_id_copy_addr(s_own_addr_type, addr, NULL);
     ESP_LOGI(TAG, "BLE address: %02x:%02x:%02x:%02x:%02x:%02x",
              addr[5],addr[4],addr[3],addr[2],addr[1],addr[0]);
+
+    /* Derive the per-device auth secret from the real MAC now that the BLE
+     * stack is synced and has assigned an identity address. */
+    ble_mgmt_init(addr);
 
     start_advertising();
 }
@@ -334,6 +360,9 @@ void nus_init(const char *device_name, nus_write_cb_t write_cb)
     assert(rc == 0);
     rc = ble_gatts_add_svcs(s_gatt_svcs);
     assert(rc == 0);
+
+    // Register the BP+ Mgmt service (auth / info / cfg / dfu) alongside NUS
+    ble_mgmt_gatt_register();
 
     // Start the NimBLE host task on core 0 (BLE stack runs there)
     nimble_port_freertos_init(ble_host_task);

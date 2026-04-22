@@ -33,3 +33,18 @@ CONFIG_UART_ISR_IN_IRAM=y
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ── OTA / Rollback ───────────────────────────────────────────────────────────
+# A freshly-booted image MUST call esp_ota_mark_app_valid_cancel_rollback()
+# before the next reset, otherwise the bootloader reverts to the previous slot.
+# Anti-rollback is deliberately NOT enabled — downgrades are allowed (user
+# decision: reflash of older versions permitted).
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# ── mbedTLS — curve primitives for DFU signature verify ──────────────────────
+# ECP + P-256 curve; used by main/verify_ecdsa.c to check ECDSA firmware
+# signatures before applying an OTA update.  The public mbedtls/ecdsa.h was
+# moved to the private tree in mbedTLS 4.x, but the low-level ECP+MPI ops
+# remain accessible via IDF's port shim, which is what verify_ecdsa.c uses.
+CONFIG_MBEDTLS_ECP_C=y
+CONFIG_MBEDTLS_ECP_DP_SECP256R1_ENABLED=y

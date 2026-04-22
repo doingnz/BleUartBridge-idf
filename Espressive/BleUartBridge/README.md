@@ -10,6 +10,11 @@ BLE client  ◄──NUS notify / write──►  ESP32 / ESP32-S3  ◄──UAR
 
 Both the ESP32 DevKit and ESP32-S3 DevKit (S3-N16R8) are supported from a single codebase. Select the target at build time — no source changes required.
 
+The same connection also exposes a **BP+ Mgmt service** for authenticated
+runtime configuration (UART baud, flow control, BLE advertising interval,
+etc.) and signed **over-the-air firmware updates**. A Web Bluetooth UI at
+`host/bpconnect/` drives both.
+
 ## Hardware
 
 ### ESP32-S3 DevKit (S3-N16R8) — 16 MB flash, 8 MB PSRAM
@@ -89,8 +94,10 @@ The firmware exposes an interactive console on the monitor port.
 |-----|--------|
 | `h` | Toggle hex dump — logs every bridged byte in both directions with offset, hex, and ASCII columns |
 | `n` | Toggle NimBLE verbose logging — suppressed by default because it logs on every notification |
-| `s` | Print status: BLE state, disconnect count, byte counters, TX queue depth, heap free / minimum |
+| `s` | Print status: BLE state, disconnect count, byte counters, TX queue depth, heap, DFU state |
 | `c` | Clear statistics — resets byte counters, dropped-byte count, NOMEM retry total, and disconnect count |
+| `i` | Print app info — firmware version, running + next OTA partitions, OTA state |
+| `r` | Factory-reset NVS (press `Y` within 5 s to confirm); reboots |
 
 ## LED status
 
@@ -125,9 +132,114 @@ The service UUID is in the ADV PDU (not the scan response) for reliable discover
 - **RX** (client → ESP32): data forwarded to UART1 TX.
 - **TX** (ESP32 → client): UART1 RX data sent as notifications in 128-byte chunks.
 
+### BP+ Mgmt service UUIDs
+
+Discovered after connect (not advertised). Web Bluetooth clients must list
+this service UUID in `optionalServices` when calling `requestDevice()`.
+
+| Role | UUID | Properties |
+|------|------|------------|
+| Service    | `7E500001-B5A3-F393-E0A9-E50E24DCCA9E` | — |
+| AUTH       | `7E500002-…` | Write + Notify |
+| INFO       | `7E500003-…` | Read (88-byte packed struct) |
+| CFG_CONTROL | `7E500004-…` | Write + Notify (TLV protocol) |
+| DFU_CONTROL | `7E500005-…` | Write + Notify |
+| DFU_DATA   | `7E500006-…` | Write No Response (`u16 seq + payload`) |
+
+Wire-protocol opcodes and status codes are documented in the headers of
+`main/dfu.h`, `main/auth.h`, and in the comment block near `CFG_OP_GET` at
+the top of `main/ble_mgmt.c`.
+
 ### MTU
 
-Preferred ATT MTU is 512 bytes. The client negotiates the actual MTU; the ESP32 accepts whatever the client proposes up to 512.
+Preferred ATT MTU is 512 bytes. The client negotiates the actual MTU; the
+ESP32 accepts whatever the client proposes up to 512. DFU caps chunk size to
+`negotiated_mtu − 5` (Chrome on Windows typically negotiates ~247, yielding
+242-byte payload chunks) — see the `START_RSP.max_chunk_size` field.
+
+## Runtime configuration
+
+Writable TLVs (via CFG_CONTROL or the `host/bpconnect/` UI):
+
+| ID | Name | Type | Default | Apply |
+|----|------|------|---------|-------|
+| 0x01 | `uart_baud`          | u32  | 115200 | reboot |
+| 0x02 | `uart_flowctrl`      | u8   | 1 (RTS/CTS) | reboot |
+| 0x03 | `uart_databits`      | u8   | 8 | reboot |
+| 0x04 | `uart_parity`        | u8   | 0 (None) | reboot |
+| 0x05 | `uart_stopbits`      | u8   | 1 | reboot |
+| 0x06 | `name_suffix`        | str[8] | MAC-derived | reboot |
+| 0x07 | `ble_tx_power_dbm`   | i8   | 3 dBm | reboot |
+| 0x08 | `hexdump_default`    | u8   | 0 | live |
+| 0x09 | `dfu_enabled`        | u8   | 1 | live |
+| 0x0A | `auth_required`      | u8   | 1 | live |
+| 0x0B | `factory_reset`      | trigger | — | reboot |
+| 0x0C | `ble_adv_interval_ms`| u16  | 100 | live (re-kicks advertising) |
+| 0x0D | `ble_preferred_mtu`  | u16  | 509 | reboot |
+
+Values live in the NVS namespace `bpcfg`. `r` on the console (or writing
+`CFG_FACTORY_RESET`) erases the namespace and reboots.
+
+## OTA firmware updates
+
+### Key provisioning (one-off)
+
+```
+python tools/keygen.py          # generate ECDSA P-256 keypair → keys/*.pem
+python tools/embed_pubkey.py    # overwrite main/signing_pubkey.h with the public key
+# edit main/secrets.h — replace the all-zero MASTER_KEY with 32 random bytes
+build.cmd esp32s3               # rebuild + flash so the device trusts the new pubkey
+```
+
+Until these run, `FW_SIGNING_PUBKEY[]` is all zeros and every DFU attempt
+fails at VERIFY with `DFU_ST_SIG_MISMATCH` — which is the intended fail-safe
+behaviour for un-provisioned units.
+
+### Signing a firmware release
+
+```
+python tools/sign_fw.py
+# produces build/BleUartBridge.bin.sig (64 B raw r||s)
+#          build/BleUartBridge.bin.sha (32 B sidecar)
+```
+
+### Pushing an update
+
+```
+cd host/bpconnect
+python -m http.server 8080
+# open http://localhost:8080 in Chrome
+```
+
+Flow: **Connect** → **Authenticate** (paste the 32-byte MASTER_KEY as 64 hex
+chars) → **Firmware update**: choose `.bin` and `.bin.sig` → **Flash**.
+
+The device:
+
+1. Allocates the inactive OTA slot
+2. Streams chunks through `esp_ota_write` (on a dedicated core-1 task)
+3. Verifies rolling SHA-256 matches what START claimed
+4. Verifies ECDSA-P256 signature against the embedded public key
+5. Sets boot partition and reboots
+6. On first boot of the new image, runs for 30 s, then calls
+   `esp_ota_mark_app_valid_cancel_rollback()` — until that point the
+   bootloader will revert on any reset
+
+Downgrades are permitted (anti-rollback not enabled).
+
+### Security model
+
+| Layer | Mechanism | Stops |
+|-------|-----------|-------|
+| L2 | HMAC-SHA256 session auth, 3-fail/30 s lockout | replay, guessing, revoked bonds |
+| L3 | SHA-256 over image, verified at VERIFY | corrupted transfers |
+| L4 | ECDSA P-256 signature (64 B) | forged images from authed clients |
+| L5 | Secure Boot v2 + Flash Encryption | **not enabled** — eFuse is one-way |
+
+Without L5 a local attacker with JTAG can extract the master key from a
+unit. The ECDSA private key is the remaining barrier — keep
+`keys/signing_private.pem` out of CI logs, shared drives, and untrusted
+hosts. See `keys/README.md` for rotation procedure.
 
 ## Flow control
 
@@ -193,20 +305,30 @@ NimBLE was chosen over Bluedroid:
 
 ```
 BleUartBridge/
-├── CMakeLists.txt                  Top-level IDF project (target set at build time)
-├── build.cmd                       Build/flash/monitor helper script
-├── sdkconfig.defaults              Shared settings: NimBLE, mbuf pool, UART ISR
-├── sdkconfig.defaults.esp32        ESP32: target, 8 MB flash, UART0 console
-├── sdkconfig.defaults.esp32s3      ESP32-S3: target, 16 MB flash, USB-JTAG console
-├── boards/
-│   ├── esp32_devkit.h              Pin assignments — ESP32 DevKit
-│   └── esp32s3_devkit.h            Pin assignments — ESP32-S3 DevKit (S3-N16R8)
-├── README.md                       This file
-├── CLAUDE.md                       Design notes and AI assistant context
+├── CMakeLists.txt              Top-level IDF project (target set at build time)
+├── build.cmd                   Build / flash / monitor helper
+├── sdkconfig.defaults          Shared settings: NimBLE, mbuf pool, mbedTLS ECP, OTA rollback
+├── sdkconfig.defaults.esp32    ESP32: target, 8 MB flash, UART0 console, partitions CSV
+├── sdkconfig.defaults.esp32s3  ESP32-S3: target, 16 MB flash, USB-JTAG console, partitions CSV
+├── partitions_esp32.csv        2× 3.87 MB OTA slots for 8 MB flash
+├── partitions_esp32s3.csv      2× 7.87 MB OTA slots for 16 MB flash
+├── boards/                     Per-board pin headers
+├── keys/                       ECDSA signing keypair + rotation notes
+├── tools/                      keygen.py, embed_pubkey.py, sign_fw.py
+├── host/
+│   └── bpconnect/              Web Bluetooth management UI (auth / config / DFU)
+├── README.md                   This file
+├── CLAUDE.md                   Design notes + AI assistant context
 └── main/
-    ├── CMakeLists.txt              Component registration
-    ├── idf_component.yml           Managed dependency: espressif/led_strip
-    ├── main.c                      Tasks, LED abstraction, UART init, console
-    ├── ble_nus.c                   NimBLE NUS GATT server + advertising
-    └── ble_nus.h                   Public API
+    ├── main.c                  Tasks, LED abstraction, UART init, console
+    ├── ble_nus.c/.h            NimBLE NUS GATT server + advertising
+    ├── ble_mgmt.c/.h           BP+ Mgmt GATT service (auth / info / cfg / dfu)
+    ├── auth.c/.h               HMAC-SHA256 challenge/response
+    ├── cfg.c/.h                NVS-backed TLV config store
+    ├── dfu.c/.h                OTA state machine + chunk queue
+    ├── verify_ecdsa.c/.h       ECDSA P-256 verify (FIPS 186-4 §6.4)
+    ├── sha256.c/.h             Self-contained SHA-256 + HMAC-SHA256
+    ├── signing_pubkey.h        Embedded public key (generated)
+    ├── secrets.h               MASTER_KEY (gitignored)
+    └── secrets.example.h       Template
 ```
